@@ -52,7 +52,7 @@ typedef unsigned short kz_pixel_t;	 /* for 12 bit-per-pixel images (default) */
 #endif
 
 /******** Prototype of CLAHE function. Put this in a separate include file. *****/
-int CLAHE(kz_pixel_t* pImage, unsigned int uiXRes, unsigned int uiYRes, kz_pixel_t Min,
+void CLAHE(kz_pixel_t* pImage, unsigned int uiXRes, unsigned int uiYRes, kz_pixel_t Min,
     kz_pixel_t Max, unsigned int uiNrX, unsigned int uiNrY,
     unsigned int uiNrBins, float fCliplimit);
 
@@ -70,7 +70,7 @@ void cv::adapthisteq (InputArray _src, OutputArray _dst,
     //CLAHE runs in-place
     src.copyTo (dst);
 
-    int ret = CLAHE ((kz_pixel_t*) dst.data, dst.cols, dst.rows, minVal, maxVal, numTilesX, numTilesY, nBins, clipLimit);
+    CLAHE ((kz_pixel_t*) dst.data, dst.cols, dst.rows, minVal, maxVal, numTilesX, numTilesY, nBins, clipLimit);
 }
 
 /*
@@ -89,9 +89,7 @@ void cv::adapthisteq (InputArray _src, OutputArray _dst,
 *  error conditions is performed.
 *
 *  #define the symbol BYTE_IMAGE to make this implementation suitable for
-*  8-bit images. The maximum number of contextual regions can be redefined
-*  by changing uiMAX_REG_X and/or uiMAX_REG_Y; the use of more than 256
-*  contextual regions is not recommended.
+*  8-bit images.
 *
 *  The code is ANSI-C and is also C++ compliant.
 *
@@ -112,24 +110,19 @@ static void Interpolate (kz_pixel_t*, int, unsigned long*, unsigned long*,
 /**************	 Start of actual code **************/
 #include <stdlib.h>			 /* To get prototypes of malloc() and free() */
 
-const unsigned int uiMAX_REG_X = 16;	  /* max. # contextual regions in x-direction */
-const unsigned int uiMAX_REG_Y = 16;	  /* max. # contextual regions in y-direction */
-
-
-
 /************************** main function CLAHE ******************/
-int CLAHE (kz_pixel_t* pImage, unsigned int uiXRes, unsigned int uiYRes,
+void CLAHE (kz_pixel_t* pImage, unsigned int uiXRes, unsigned int uiYRes,
     kz_pixel_t Min, kz_pixel_t Max, unsigned int uiNrX, unsigned int uiNrY,
-    unsigned int uiNrBins, float fCliplimit)
+    unsigned int uiNrBins, float fClipLimit)
     /*   pImage - Pointer to the input/output image
     *   uiXRes - Image resolution in the X direction
     *   uiYRes - Image resolution in the Y direction
     *   Min - Minimum greyvalue of input image (also becomes minimum of output image)
     *   Max - Maximum greyvalue of input image (also becomes maximum of output image)
-    *   uiNrX - Number of contextial regions in the X direction (min 2, max uiMAX_REG_X)
-    *   uiNrY - Number of contextial regions in the Y direction (min 2, max uiMAX_REG_Y)
+    *   uiNrX - Number of contextial regions in the X direction (min 2)
+    *   uiNrY - Number of contextial regions in the Y direction (min 2)
     *   uiNrBins - Number of greybins for histogram ("dynamic range")
-    *   float fCliplimit - Normalized cliplimit (higher values give more contrast)
+    *   float fClipLimit - Normalized cliplimit (higher values give more contrast)
     * The number of "effective" greylevels in the output image is set by uiNrBins; selecting
     * a small value (eg. 128) speeds up processing and still produce an output image of
     * good quality. The output image will have the same minimum and maximum value as the input
@@ -145,28 +138,38 @@ int CLAHE (kz_pixel_t* pImage, unsigned int uiXRes, unsigned int uiYRes,
     unsigned long* pulHist, *pulMapArray; /* pointer to histogram and mappings*/
     unsigned long* pulLU, *pulLB, *pulRU, *pulRB; /* auxiliary pointers interpolation */
 
-    if (uiNrX > uiMAX_REG_X) return -1;	   /* # of regions x-direction too large */
-    if (uiNrY > uiMAX_REG_Y) return -2;	   /* # of regions y-direction too large */
-    if (uiXRes % uiNrX) return -3;	  /* x-resolution no multiple of uiNrX */
-    if (uiYRes & uiNrY) return -4;	  /* y-resolution no multiple of uiNrY */
-    if (Max >= uiNR_OF_GREY) return -5;	   /* maximum too large */
-    if (Min >= Max) return -6;		  /* minimum equal or larger than maximum */
-    if (uiNrX < 2 || uiNrY < 2) return -7;/* at least 4 contextual regions required */
-    if (fCliplimit == 1.0) return 0;	  /* is OK, immediately returns original image. */
-    if (uiNrBins == 0) uiNrBins = 128;	  /* default value when not specified */
+    if (uiNrX < 2 || uiNrY < 2)
+        CV_Error (CV_StsOutOfRange, "at least 4 contextual regions required");
+    if (uiXRes % uiNrX)
+        CV_Error (CV_StsBadArg, "width not a multiple of nTilesX");
+    if (uiYRes % uiNrY)
+        CV_Error (CV_StsBadArg, "height not a multiple of nTilesY");
+    if (Max >= uiNR_OF_GREY)
+        CV_Error (CV_StsOutOfRange, "maximum cannot exceed highest pixel value");
+    if (Min >= Max)
+        CV_Error (CV_StsOutOfRange, "minimum cannot exceed maximum");
+    if (uiNrBins == 0)
+        CV_Error (CV_StsOutOfRange, "nBins must be greater than 0");
 
     pulMapArray=(unsigned long *)malloc(sizeof(unsigned long)*uiNrX*uiNrY*uiNrBins);
-    if (pulMapArray == 0) return -8;	  /* Not enough memory! (try reducing uiNrBins) */
+    if (pulMapArray == 0)
+        CV_Error (CV_StsNoMem, "Not enough memory! (try reducing nBins)");
 
     uiXSize = uiXRes/uiNrX; uiYSize = uiYRes/uiNrY;  /* Actual size of contextual regions */
     ulNrPixels = (unsigned long)uiXSize * (unsigned long)uiYSize;
 
-    if(fCliplimit > 0.0) {		  /* Calculate actual cliplimit	 */
-        ulClipLimit = (unsigned long) (fCliplimit * (uiXSize * uiYSize) / uiNrBins);
+    if (fClipLimit == 1.0)
+        return;	  /* is OK, immediately returns original image. FIXME: valid? */
+    else if (fClipLimit > 0.0) {		  /* Calculate actual cliplimit	 */
+        //FIXME: this doesn't seem to really be normalized 0 to 1
+        ulClipLimit = (unsigned long) (fClipLimit * (uiXSize * uiYSize) / uiNrBins);
         ulClipLimit = (ulClipLimit < 1UL) ? 1UL : ulClipLimit;
     }
-    else ulClipLimit = 1UL<<14;		  /* Large value, do not clip (AHE) */
+    else
+        ulClipLimit = 1UL<<14;		  /* Large value, do not clip (AHE) */
+
     MakeLut(aLUT, Min, Max, uiNrBins);	  /* Make lookup table for mapping of greyvalues */
+
     /* Calculate greylevel mappings for each contextual region */
     for (uiY = 0, pImPointer = pImage; uiY < uiNrY; uiY++) {
         for (uiX = 0; uiX < uiNrX; uiX++, pImPointer += uiXSize) {
@@ -214,7 +217,6 @@ int CLAHE (kz_pixel_t* pImage, unsigned int uiXRes, unsigned int uiYRes,
         pImPointer += (uiSubY - 1) * uiXRes;
     }
     free(pulMapArray);					  /* free space for histograms */
-    return 0;						  /* return status OK */
 }
 void ClipHistogram (unsigned long* pulHistogram, unsigned int
     uiNrGreylevels, unsigned long ulClipLimit)

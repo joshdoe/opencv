@@ -2,6 +2,7 @@
 #include "opencv2/highgui/highgui.hpp"
 
 #include <stdio.h>
+#include <iostream>
 
 using namespace cv;
 using namespace std;
@@ -16,8 +17,12 @@ Mat image, gray, adjusted;
 // define a trackbar callback
 static void onTrackbar(int, void*)
 {
-    adapthisteq(gray, adjusted, nTilesX, nTilesY, clipLimit * 0.01, nBins);
-
+    try {
+        adapthisteq(gray, adjusted, nTilesX, nTilesY, clipLimit * 0.01, nBins);
+    } catch (Exception& e) {
+        std::cout << e.what();
+        return;
+    }
     imshow("CLAHE", adjusted);
 }
 
@@ -58,7 +63,7 @@ int main( int argc, const char** argv )
     // create a toolbar
     createTrackbar("nTilesX", windowTitle, &nTilesX, 16, onTrackbar);
     createTrackbar("nTilesY", windowTitle, &nTilesY, 16, onTrackbar);
-    createTrackbar("clipLimit", windowTitle, &clipLimit, 100, onTrackbar);
+    createTrackbar("clipLimit", windowTitle, &clipLimit, 2000, onTrackbar);
     createTrackbar("nBins", windowTitle, &nBins, 256, onTrackbar);
 
     // Show the image
