@@ -440,6 +440,12 @@ CV_EXPORTS_W void Canny( InputArray image, OutputArray edges,
                          double threshold1, double threshold2,
                          int apertureSize=3, bool L2gradient=false );
 
+//! applies Contrast-limited adaptive histogram equalization (CLAHE) algorithm
+CV_EXPORTS_W void adapthisteq( InputArray src, OutputArray dst,
+                               unsigned int numTilesX = 8, unsigned int numTilesY = 8,
+                               double clipLimit = 0.01, unsigned short nBins = 256,
+                               unsigned short minVal = 0, unsigned short maxVal = 255);
+
 //! computes minimum eigen value of 2x2 derivative covariation matrix at each pixel - the cornerness criteria
 CV_EXPORTS_W void cornerMinEigenVal( InputArray src, OutputArray dst,
                                    int blockSize, int ksize=3,
