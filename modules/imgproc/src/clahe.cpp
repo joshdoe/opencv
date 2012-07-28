@@ -41,17 +41,8 @@
 
 #include "precomp.hpp"
 
-#define BYTE_IMAGE
-
-#ifdef BYTE_IMAGE
-typedef unsigned char kz_pixel_t;	 /* for 8 bit-per-pixel images */
-#define uiNR_OF_GREY (256)
-#else
-typedef unsigned short kz_pixel_t;	 /* for 12 bit-per-pixel images (default) */
-# define uiNR_OF_GREY (4096)
-#endif
-
 /******** Prototype of CLAHE function. Put this in a separate include file. *****/
+template <typename kz_pixel_t>
 void CLAHE(kz_pixel_t* pImage, unsigned int uiXRes, unsigned int uiYRes, kz_pixel_t Min,
     kz_pixel_t Max, unsigned int uiNrX, unsigned int uiNrY,
     unsigned int uiNrBins, float fCliplimit);
@@ -62,7 +53,7 @@ void cv::adapthisteq (InputArray _src, OutputArray _dst,
     unsigned short minVal, unsigned short maxVal)
 {
     Mat src = _src.getMat ();
-    CV_Assert (src.depth() == CV_8U);
+    CV_Assert (src.depth() == CV_8U || src.depth() == CV_16U);
 
     _dst.create (src.size(), CV_8U);
     Mat dst = _dst.getMat ();
@@ -70,7 +61,10 @@ void cv::adapthisteq (InputArray _src, OutputArray _dst,
     //CLAHE runs in-place
     src.copyTo (dst);
 
-    CLAHE ((kz_pixel_t*) dst.data, dst.cols, dst.rows, minVal, maxVal, numTilesX, numTilesY, nBins, clipLimit);
+    if (dst.depth () == CV_8U)
+        CLAHE<unsigned char> ((unsigned char*) dst.data, dst.cols, dst.rows, minVal, maxVal, numTilesX, numTilesY, nBins, clipLimit);
+    else if (dst.depth () == CV_16U)
+        CLAHE ((unsigned short*) dst.data, dst.cols, dst.rows, minVal, maxVal, numTilesX, numTilesY, nBins, clipLimit);
 }
 
 /*
@@ -99,11 +93,15 @@ void cv::adapthisteq (InputArray _src, OutputArray _dst,
 
 /*********************** Local prototypes ************************/
 static void ClipHistogram (unsigned long*, unsigned int, unsigned long);
+template <typename kz_pixel_t>
 static void MakeHistogram (kz_pixel_t*, unsigned int, unsigned int, unsigned int,
     unsigned long*, unsigned int, kz_pixel_t*);
+template <typename kz_pixel_t>
 static void MapHistogram (unsigned long*, kz_pixel_t, kz_pixel_t,
     unsigned int, unsigned long);
+template <typename kz_pixel_t>
 static void MakeLut (kz_pixel_t*, kz_pixel_t, kz_pixel_t, unsigned int);
+template <typename kz_pixel_t>
 static void Interpolate (kz_pixel_t*, int, unsigned long*, unsigned long*,
     unsigned long*, unsigned long*, unsigned int, unsigned int, kz_pixel_t*);
 
@@ -111,6 +109,7 @@ static void Interpolate (kz_pixel_t*, int, unsigned long*, unsigned long*,
 #include <stdlib.h>			 /* To get prototypes of malloc() and free() */
 
 /************************** main function CLAHE ******************/
+template <typename kz_pixel_t>
 void CLAHE (kz_pixel_t* pImage, unsigned int uiXRes, unsigned int uiYRes,
     kz_pixel_t Min, kz_pixel_t Max, unsigned int uiNrX, unsigned int uiNrY,
     unsigned int uiNrBins, float fClipLimit)
@@ -134,7 +133,7 @@ void CLAHE (kz_pixel_t* pImage, unsigned int uiXRes, unsigned int uiYRes,
     unsigned int uiXL, uiXR, uiYU, uiYB;  /* auxiliary variables interpolation routine */
     unsigned long ulClipLimit, ulNrPixels;/* clip limit and region pixel count */
     kz_pixel_t* pImPointer;		   /* pointer to image */
-    kz_pixel_t aLUT[uiNR_OF_GREY];	    /* lookup table used for scaling of input image */
+    kz_pixel_t *aLUT;	    /* lookup table used for scaling of input image */
     unsigned long* pulHist, *pulMapArray; /* pointer to histogram and mappings*/
     unsigned long* pulLU, *pulLB, *pulRU, *pulRB; /* auxiliary pointers interpolation */
 
@@ -144,7 +143,7 @@ void CLAHE (kz_pixel_t* pImage, unsigned int uiXRes, unsigned int uiYRes,
         CV_Error (CV_StsBadArg, "width not a multiple of nTilesX");
     if (uiYRes % uiNrY)
         CV_Error (CV_StsBadArg, "height not a multiple of nTilesY");
-    if (Max >= uiNR_OF_GREY)
+    if (Max >= (1 << (sizeof (kz_pixel_t) * 8)))
         CV_Error (CV_StsOutOfRange, "maximum cannot exceed highest pixel value");
     if (Min >= Max)
         CV_Error (CV_StsOutOfRange, "minimum cannot exceed maximum");
@@ -152,7 +151,8 @@ void CLAHE (kz_pixel_t* pImage, unsigned int uiXRes, unsigned int uiYRes,
         CV_Error (CV_StsOutOfRange, "nBins must be greater than 0");
 
     pulMapArray=(unsigned long *)malloc(sizeof(unsigned long)*uiNrX*uiNrY*uiNrBins);
-    if (pulMapArray == 0)
+    aLUT = (kz_pixel_t *) malloc (1 << (sizeof (kz_pixel_t) * 8));
+    if (!pulMapArray || !aLUT)
         CV_Error (CV_StsNoMem, "Not enough memory! (try reducing nBins)");
 
     uiXSize = uiXRes/uiNrX; uiYSize = uiYRes/uiNrY;  /* Actual size of contextual regions */
@@ -216,8 +216,11 @@ void CLAHE (kz_pixel_t* pImage, unsigned int uiXRes, unsigned int uiYRes,
         }
         pImPointer += (uiSubY - 1) * uiXRes;
     }
-    free(pulMapArray);					  /* free space for histograms */
+
+    free (pulMapArray);
+    free (aLUT);
 }
+
 void ClipHistogram (unsigned long* pulHistogram, unsigned int
     uiNrGreylevels, unsigned long ulClipLimit)
     /* This function performs clipping of the histogram and redistribution of bins.
@@ -272,6 +275,8 @@ void ClipHistogram (unsigned long* pulHistogram, unsigned int
             break;
     }
 }
+
+template <typename kz_pixel_t>
 void MakeHistogram (kz_pixel_t* pImage, unsigned int uiXRes,
     unsigned int uiSizeX, unsigned int uiSizeY,
     unsigned long* pulHistogram,
@@ -295,6 +300,7 @@ void MakeHistogram (kz_pixel_t* pImage, unsigned int uiXRes,
     }
 }
 
+template <typename kz_pixel_t>
 void MapHistogram (unsigned long* pulHistogram, kz_pixel_t Min, kz_pixel_t Max,
     unsigned int uiNrGreylevels, unsigned long ulNrOfPixels)
     /* This function calculates the equalized lookup table (mapping) by
@@ -311,6 +317,7 @@ void MapHistogram (unsigned long* pulHistogram, kz_pixel_t Min, kz_pixel_t Max,
     }
 }
 
+template <typename kz_pixel_t>
 void MakeLut (kz_pixel_t * pLUT, kz_pixel_t Min, kz_pixel_t Max, unsigned int uiNrBins)
     /* To speed up histogram clipping, the input image [Min,Max] is scaled down to
     * [0,uiNrBins-1]. This function calculates the LUT.
@@ -322,6 +329,7 @@ void MakeLut (kz_pixel_t * pLUT, kz_pixel_t Min, kz_pixel_t Max, unsigned int ui
     for (i = Min; i <= Max; i++)  pLUT[i] = (i - Min) / BinSize;
 }
 
+template <typename kz_pixel_t>
 void Interpolate (kz_pixel_t * pImage, int uiXRes, unsigned long * pulMapLU,
     unsigned long * pulMapRU, unsigned long * pulMapLB,  unsigned long * pulMapRB,
     unsigned int uiXSize, unsigned int uiYSize, kz_pixel_t * pLUT)
