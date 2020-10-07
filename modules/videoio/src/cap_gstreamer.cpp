@@ -264,6 +264,7 @@ private:
     bool          isPosFramesSupported;
     bool          isPosFramesEmulated;
     gint64        emulatedFrameNumber;
+    gint          depth;
 
 public:
     GStreamerCapture();
@@ -292,7 +293,8 @@ GStreamerCapture::GStreamerCapture() :
     duration(-1), width(-1), height(-1), fps(-1),
     isPosFramesSupported(false),
     isPosFramesEmulated(false),
-    emulatedFrameNumber(-1)
+    emulatedFrameNumber(-1),
+    depth(8)
 {
 }
 
@@ -314,7 +316,7 @@ GStreamerCapture::~GStreamerCapture()
 /*!
  * \brief CvCapture_GStreamer::grabFrame
  * \return
- * Grabs a sample from the pipeline, awaiting consumation by retreiveFrame.
+ * Grabs a sample from the pipeline, awaiting consumation by retrieveFrame.
  * The pipeline is started if it was not running yet
  */
 bool GStreamerCapture::grabFrame()
@@ -372,9 +374,17 @@ bool GStreamerCapture::retrieveFrame(int, OutputArray dst)
     {
         Mat src;
         if (isOutputByteBuffer)
+        {
             src = Mat(Size(info.size, 1), CV_8UC1, info.data);
-        else
+        }
+        else if (depth == 8)
+        {
             src = Mat(sz, CV_MAKETYPE(CV_8U, channels), info.data);
+        }
+        else if (depth == 16)
+        {
+            src = Mat(sz, CV_MAKETYPE(CV_16U, channels), info.data);
+        }
         CV_Assert(src.isContinuous());
         src.copyTo(dst);
     }
@@ -402,7 +412,7 @@ bool GStreamerCapture::determineFrameDims(Size &sz, gint& channels, bool& isOutp
     if (!gst_structure_get_int(structure, "width", &width)
         || !gst_structure_get_int(structure, "height", &height))
     {
-        CV_WARN("Can't query frame size from GStreeamer buffer");
+        CV_WARN("Can't query frame size from GStreamer buffer");
         return false;
     }
 
@@ -413,9 +423,10 @@ bool GStreamerCapture::determineFrameDims(Size &sz, gint& channels, bool& isOutp
         return false;
     std::string name = toLowerCase(std::string(name_));
 
-    // we support 11 types of data:
+    // we support these types of data:
     //     video/x-raw, format=BGR   -> 8bit, 3 channels
     //     video/x-raw, format=GRAY8 -> 8bit, 1 channel
+    //     video/x-raw, format=GRAY16_LE -> 16bit, 1 channel
     //     video/x-raw, format=UYVY  -> 8bit, 2 channel
     //     video/x-raw, format=YUY2  -> 8bit, 2 channel
     //     video/x-raw, format=YVYU  -> 8bit, 2 channel
@@ -426,7 +437,6 @@ bool GStreamerCapture::determineFrameDims(Size &sz, gint& channels, bool& isOutp
     //     video/x-bayer             -> 8bit, 1 channel
     //     image/jpeg                -> 8bit, mjpeg: buffer_size x 1 x 1
     // bayer data is never decoded, the user is responsible for that
-    // everything is 8 bit, so we just test the caps for bit depth
     if (name == "video/x-raw")
     {
         const gchar* format_ = gst_structure_get_string(structure, "format");
@@ -450,6 +460,11 @@ bool GStreamerCapture::determineFrameDims(Size &sz, gint& channels, bool& isOutp
         else if (format == "GRAY8")
         {
             channels = 1;
+        }
+        else if (format == "GRAY16_LE")
+        {
+            channels = 1;
+            depth = 16;
         }
         else
         {
@@ -852,8 +867,7 @@ bool GStreamerCapture::open(const String &filename_)
     //do not emit signals: all calls will be synchronous and blocking
     gst_app_sink_set_emit_signals (GST_APP_SINK(sink.get()), FALSE);
 
-
-    caps.attach(gst_caps_from_string("video/x-raw, format=(string){BGR, GRAY8}; video/x-bayer,format=(string){rggb,bggr,grbg,gbrg}; image/jpeg"));
+    caps.attach(gst_caps_from_string("video/x-raw, format=(string){BGR, GRAY8, GRAY16_LE}; video/x-bayer,format=(string){rggb,bggr,grbg,gbrg}; image/jpeg"));
 
     if (manualpipeline)
     {
