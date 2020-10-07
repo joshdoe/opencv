@@ -100,4 +100,44 @@ TEST(Videoio_GStreamer, unsupported_pipeline)
 
 }
 
+TEST(Videoio_GStreamer, gray16_writing)
+{
+    VideoCaptureAPIs apiPref = CAP_GSTREAMER;
+    if (!isBackendAvailable(apiPref, cv::videoio_registry::getStreamBackends()))
+        throw SkipTestException(cv::String("Backend is not available/disabled: ") + cv::videoio_registry::getBackendName(apiPref));
+
+    // generate a noise frame
+    Size frame_size(640, 480);
+    Mat frame = Mat::zeros(frame_size, CV_16U);
+    cv::randu(frame, 0, 65535);
+
+    // generate a temp filename, and fix path separators to how GStreamer expects them
+    cv::String temp_file = cv::tempfile("gst_gray16.raw");
+    std::replace(temp_file.begin(), temp_file.end(), '\\', '/');
+
+    // write noise frame to file using GStreamer
+    std::ostringstream writer_pipeline;
+    writer_pipeline << "appsrc ! filesink location=" << temp_file;
+    VideoWriter writer;
+    ASSERT_NO_THROW(writer.open(writer_pipeline.str(), apiPref, 0/*fourcc*/, 30/*fps*/, cv::Size(), false));
+    ASSERT_TRUE(writer.isOpened());
+    ASSERT_NO_THROW(writer.write(frame));
+    EXPECT_NO_THROW(writer.release());
+
+    // read noise frame back in
+    Mat written_frame(frame_size, CV_16U);
+    std::ifstream fs(temp_file, std::ios::in | std::ios::binary);
+    fs.read((char*)written_frame.ptr(0), frame_size.width * frame_size.height * 2);
+    ASSERT_TRUE(fs);
+    fs.close();
+
+    // compare to make sure it's identical
+    Mat diff;
+    absdiff(frame, written_frame, diff);
+    Scalar total = sum(diff);
+    ASSERT_EQ(total[0], 0);
+
+    EXPECT_EQ(0, remove(temp_file.c_str()));
+}
+
 } // namespace

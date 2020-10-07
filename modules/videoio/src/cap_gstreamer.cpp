@@ -1261,6 +1261,7 @@ public:
     bool writeFrame( const IplImage* image ) CV_OVERRIDE;
 protected:
     const char* filenameToMimetype(const char* filename);
+    bool setCaps(const IplImage* image);
     GSafePtr<GstElement> pipeline;
     GSafePtr<GstElement> source;
 
@@ -1387,8 +1388,8 @@ const char* CvVideoWriter_GStreamer::filenameToMimetype(const char *filename)
  * \param filename filename to output to
  * \param fourcc desired codec fourcc
  * \param fps desired framerate
- * \param frameSize the size of the expected frames
- * \param is_color color or grayscale
+ * \param frameSize ignored, inferred from the image size
+ * \param is_color ignored, inferred from image type
  * \return success
  *
  * We support 2 modes of operation. Either the user enters a filename and a fourcc
@@ -1406,7 +1407,6 @@ bool CvVideoWriter_GStreamer::open( const std::string &filename, int fourcc,
     // check arguments
     CV_Assert(!filename.empty());
     CV_Assert(fps > 0);
-    CV_Assert(frameSize.width > 0 && frameSize.height > 0);
 
     // init gstreamer
     gst_initializer::init();
@@ -1539,6 +1539,7 @@ bool CvVideoWriter_GStreamer::open( const std::string &filename, int fourcc,
     int fps_num = 0, fps_denom = 1;
     toFraction(fps, fps_num, fps_denom);
 
+    //set caps now if encoded, otherwise wait for first frame
     if (fourcc == CV_FOURCC('M','J','P','G') && frameSize.height == 1)
     {
         input_pix_fmt = GST_VIDEO_FORMAT_ENCODED;
@@ -1546,37 +1547,9 @@ bool CvVideoWriter_GStreamer::open( const std::string &filename, int fourcc,
                                         "framerate", GST_TYPE_FRACTION, int(fps_num), int(fps_denom),
                                         NULL));
         caps.attach(gst_caps_fixate(caps.detach()));
-    }
-    else if (is_color)
-    {
-        input_pix_fmt = GST_VIDEO_FORMAT_BGR;
-        bufsize = frameSize.width * frameSize.height * 3;
-
-        caps.attach(gst_caps_new_simple("video/x-raw",
-                                        "format", G_TYPE_STRING, "BGR",
-                                        "width", G_TYPE_INT, frameSize.width,
-                                        "height", G_TYPE_INT, frameSize.height,
-                                        "framerate", GST_TYPE_FRACTION, gint(fps_num), gint(fps_denom),
-                                        NULL));
-        CV_Assert(caps);
-        caps.attach(gst_caps_fixate(caps.detach()));
-        CV_Assert(caps);
-    }
-    else
-    {
-        input_pix_fmt = GST_VIDEO_FORMAT_GRAY8;
-        bufsize = frameSize.width * frameSize.height;
-
-        caps.attach(gst_caps_new_simple("video/x-raw",
-                                        "format", G_TYPE_STRING, "GRAY8",
-                                        "width", G_TYPE_INT, frameSize.width,
-                                        "height", G_TYPE_INT, frameSize.height,
-                                        "framerate", GST_TYPE_FRACTION, gint(fps_num), gint(fps_denom),
-                                        NULL));
-        caps.attach(gst_caps_fixate(caps.detach()));
+        gst_app_src_set_caps(GST_APP_SRC(source.get()), caps);
     }
 
-    gst_app_src_set_caps(GST_APP_SRC(source.get()), caps);
     gst_app_src_set_stream_type(GST_APP_SRC(source.get()), GST_APP_STREAM_TYPE_STREAM);
     gst_app_src_set_size (GST_APP_SRC(source.get()), -1);
 
@@ -1616,6 +1589,51 @@ bool CvVideoWriter_GStreamer::open( const std::string &filename, int fourcc,
     return true;
 }
 
+bool CvVideoWriter_GStreamer::setCaps(const IplImage* image)
+{
+    GSafePtr<GstCaps> caps;
+    const char* format;
+
+    if (input_pix_fmt) {
+        //caps have already been set
+        return true;
+    }
+
+    if (image->nChannels == 3 && image->depth == IPL_DEPTH_8U) {
+        input_pix_fmt = GST_VIDEO_FORMAT_BGR;
+        format = "BGR";
+    }
+    else if (image->nChannels == 1 && image->depth == IPL_DEPTH_8U) {
+        input_pix_fmt = GST_VIDEO_FORMAT_GRAY8;
+        format = "GRAY8";
+    }
+    else if (image->nChannels == 1 && image->depth == IPL_DEPTH_16U) {
+        input_pix_fmt = GST_VIDEO_FORMAT_GRAY16_LE;
+        format = "GRAY16_LE";
+    }
+    else {
+        CV_WARN("GStreamer backend cvWriteFrame() only supports three channel IPL_DEPTH_8U or single channel IPL_DEPTH_8U/IPL_DEPTH_16U");
+        return false;
+    }
+
+    int fps_num = 0, fps_denom = 1;
+    toFraction(framerate, fps_num, fps_denom);
+
+    caps.attach(gst_caps_new_simple("video/x-raw",
+        "format", G_TYPE_STRING, format,
+        "width", G_TYPE_INT, image->width,
+        "height", G_TYPE_INT, image->height,
+        "framerate", GST_TYPE_FRACTION, gint(fps_num), gint(fps_denom),
+        NULL));
+    CV_Assert(caps);
+    caps.attach(gst_caps_fixate(caps.detach()));
+    CV_Assert(caps);
+
+    gst_app_src_set_caps(GST_APP_SRC(source.get()), caps);
+
+    return true;
+}
+
 
 /*!
  * \brief CvVideoWriter_GStreamer::writeFrame
@@ -1633,6 +1651,10 @@ bool CvVideoWriter_GStreamer::writeFrame( const IplImage * image )
 
     handleMessage(pipeline);
 
+    if (!setCaps(image)) {
+        return false;
+    }
+
     if (input_pix_fmt == GST_VIDEO_FORMAT_ENCODED) {
         if (image->nChannels != 1 || image->depth != IPL_DEPTH_8U || image->height != 1) {
             CV_WARN("cvWriteFrame() needs images with depth = IPL_DEPTH_8U, nChannels = 1 and height = 1.");
@@ -1649,6 +1671,12 @@ bool CvVideoWriter_GStreamer::writeFrame( const IplImage * image )
     else if (input_pix_fmt == GST_VIDEO_FORMAT_GRAY8) {
         if (image->nChannels != 1 || image->depth != IPL_DEPTH_8U) {
             CV_WARN("cvWriteFrame() needs images with depth = IPL_DEPTH_8U and nChannels = 1.");
+            return false;
+        }
+    }
+    else if (input_pix_fmt == GST_VIDEO_FORMAT_GRAY16_LE) {
+        if (image->nChannels != 1 || image->depth != IPL_DEPTH_16U) {
+            CV_WARN("cvWriteFrame() needs images with depth = IPL_DEPTH_16U and nChannels = 1.");
             return false;
         }
     }
